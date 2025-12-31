@@ -3,6 +3,10 @@
 
 #include QMK_KEYBOARD_H
 
+#ifdef RGBLIGHT_ENABLE
+#    include "rgblight.h"
+#endif
+
 enum custom_layer {
     _BASE,
     _FN1,
@@ -27,6 +31,8 @@ enum custom_layer {
  * S simlayer rules:
  * - Holding `S` alone types `s` on release.
  * - Holding `S` while tapping H/J/K/L sends Ctrl+H/J/K/L.
+ * Mode toggle:
+ * - Hold the `1` key for ≥5s to toggle between modified logic and stock behavior.
  * Thumb rules:
  * - Both split space bar keys send Space (no Backspace on the right thumb).
  */
@@ -44,46 +50,222 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {[_BASE] = LAYOUT_6
 
                                                               [_LS_CTRL] = LAYOUT_65_with_macro(_______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______, _______)};
 
+static bool     modifications_enabled = true;
+static bool     hold1_active          = false;
+static bool     hold1_toggled         = false;
+static uint16_t hold1_timer           = 0;
 
-static bool caps_held = false;
+static bool caps_held            = false;
 static bool caps_arrow_active[4] = {false, false, false, false};
-static bool s_held = false;
-static bool s_used = false;
+static bool s_held               = false;
+static bool s_used               = false;
+
+#ifdef RGBLIGHT_ENABLE
+static bool     indicator_active       = false;
+static uint16_t indicator_timer        = 0;
+static bool     indicator_prev_enabled = false;
+static uint8_t  indicator_prev_mode    = 0;
+static uint16_t indicator_prev_hue     = 0;
+static uint8_t  indicator_prev_sat     = 0;
+static uint8_t  indicator_prev_val     = 0;
+#endif
+
+static void flash_indicator(bool enabled) {
+#ifdef RGBLIGHT_ENABLE
+    indicator_prev_enabled = rgblight_is_enabled();
+    indicator_prev_mode    = rgblight_get_mode();
+    indicator_prev_hue     = rgblight_get_hue();
+    indicator_prev_sat     = rgblight_get_sat();
+    indicator_prev_val     = rgblight_get_val();
+
+    if (!indicator_prev_enabled) {
+        rgblight_enable_noeeprom();
+    }
+    rgblight_mode_noeeprom(RGBLIGHT_MODE_STATIC_LIGHT);
+    if (enabled) {
+        rgblight_sethsv_noeeprom(85, 255, 255);
+    } else {
+        rgblight_sethsv_noeeprom(0, 255, 255);
+    }
+
+    indicator_active = true;
+    indicator_timer  = timer_read();
+#else
+    (void)enabled;
+#endif
+}
+
+static void reset_indicator_if_needed(void) {
+#ifdef RGBLIGHT_ENABLE
+    if (!indicator_active) {
+        return;
+    }
+    if (timer_elapsed(indicator_timer) > 200) {
+        if (!indicator_prev_enabled) {
+            rgblight_disable_noeeprom();
+        } else {
+            rgblight_mode_noeeprom(indicator_prev_mode);
+            rgblight_sethsv_noeeprom(indicator_prev_hue, indicator_prev_sat, indicator_prev_val);
+        }
+        indicator_active = false;
+    }
+#endif
+}
+
+static void release_caps_arrows(void) {
+    if (caps_arrow_active[0]) {
+        unregister_code(KC_LEFT);
+        caps_arrow_active[0] = false;
+    }
+    if (caps_arrow_active[1]) {
+        unregister_code(KC_DOWN);
+        caps_arrow_active[1] = false;
+    }
+    if (caps_arrow_active[2]) {
+        unregister_code(KC_UP);
+        caps_arrow_active[2] = false;
+    }
+    if (caps_arrow_active[3]) {
+        unregister_code(KC_RIGHT);
+        caps_arrow_active[3] = false;
+    }
+}
+
+static void apply_modifications_enabled(bool enabled) {
+    if (modifications_enabled == enabled) {
+        return;
+    }
+
+    bool send_s_on_release = (s_held && !s_used && !enabled);
+
+    modifications_enabled = enabled;
+
+    caps_held = false;
+    s_held    = false;
+    s_used    = false;
+    release_caps_arrows();
+
+    if (!enabled) {
+        if (send_s_on_release) {
+            tap_code(KC_S);
+        }
+        layer_off(_LA_SYM);
+        layer_off(_LD_ARROW);
+        layer_off(_LL_SYM);
+        layer_off(_LN_NUM);
+        layer_off(_LS_CTRL);
+    }
+
+    flash_indicator(enabled);
+}
 
 bool process_record_user(uint16_t keycode, keyrecord_t *record) {
+    bool mods_active = modifications_enabled;
+
     switch (keycode) {
+        case KC_1:
+            if (record->event.pressed) {
+                hold1_active  = true;
+                hold1_toggled = false;
+                hold1_timer   = timer_read();
+            } else {
+                if (!hold1_toggled) {
+                    tap_code(KC_1);
+                }
+                hold1_active = false;
+            }
+            return false;
+
         case CAPS_ESC:
+            if (!mods_active) {
+                if (record->event.pressed) {
+                    tap_code(KC_CAPS);
+                }
+                return false;
+            }
             if (record->event.pressed) {
                 caps_held = true;
             } else {
                 caps_held = false;
             }
             return true;
+
+        case A_SYM:
+            if (!mods_active) {
+                if (record->event.pressed) {
+                    register_code(KC_A);
+                } else {
+                    unregister_code(KC_A);
+                }
+                return false;
+            }
+            break;
+
+        case D_ARROWS:
+            if (!mods_active) {
+                if (record->event.pressed) {
+                    register_code(KC_D);
+                } else {
+                    unregister_code(KC_D);
+                }
+                return false;
+            }
+            break;
+
+        case L_SYM:
+            if (!mods_active) {
+                if (record->event.pressed) {
+                    register_code(KC_L);
+                } else {
+                    unregister_code(KC_L);
+                }
+                return false;
+            }
+            break;
+
+        case N_NUM:
+            if (!mods_active) {
+                if (record->event.pressed) {
+                    register_code(KC_N);
+                } else {
+                    unregister_code(KC_N);
+                }
+                return false;
+            }
+            break;
+
         case KC_S:
+            if (!mods_active) {
+                return true;
+            }
             if (record->event.pressed) {
                 s_held = true;
                 s_used = false;
             } else {
-                s_held = false;
                 if (!s_used) {
                     tap_code(KC_S);
                 }
+                s_held = false;
             }
             return false;
+
         case KC_H:
         case KC_J:
         case KC_K:
         case KC_L: {
-            int idx = 0;
+            if (!mods_active) {
+                return true;
+            }
+            int      idx        = 0;
             uint16_t arrow_code = KC_LEFT;
             if (keycode == KC_J) {
-                idx = 1;
+                idx        = 1;
                 arrow_code = KC_DOWN;
             } else if (keycode == KC_K) {
-                idx = 2;
+                idx        = 2;
                 arrow_code = KC_UP;
             } else if (keycode == KC_L) {
-                idx = 3;
+                idx        = 3;
                 arrow_code = KC_RIGHT;
             }
             if (caps_held) {
@@ -107,6 +289,10 @@ bool process_record_user(uint16_t keycode, keyrecord_t *record) {
             break;
     }
 
+    if (!mods_active) {
+        return true;
+    }
+
     if (caps_held && keycode >= KC_A && keycode <= KC_Z && keycode != KC_H && keycode != KC_J && keycode != KC_K && keycode != KC_L) {
         if (record->event.pressed) {
             tap_code16(C(keycode));
@@ -115,4 +301,13 @@ bool process_record_user(uint16_t keycode, keyrecord_t *record) {
     }
 
     return true;
+}
+
+void matrix_scan_user(void) {
+    if (hold1_active && !hold1_toggled && timer_elapsed(hold1_timer) >= 5000) {
+        hold1_toggled = true;
+        apply_modifications_enabled(!modifications_enabled);
+    }
+
+    reset_indicator_if_needed();
 }
