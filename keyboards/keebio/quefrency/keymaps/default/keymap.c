@@ -24,6 +24,9 @@ enum custom_layer {
  * - Tapping `CAPS_ESC` emits Escape.
  * - Holding `CAPS_ESC` engages `_LS_CTRL`; letter keys send Ctrl+letter except H/J/K/L.
  * - With `_LS_CTRL` active, H/J/K/L send arrow keys without Ctrl for Vim-style motion.
+ * S simlayer rules:
+ * - Holding `S` alone types `s` on release.
+ * - Holding `S` while tapping H/J/K/L sends Ctrl+H/J/K/L.
  * Thumb rules:
  * - Both split space bar keys send Space (no Backspace on the right thumb).
  */
@@ -44,6 +47,8 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {[_BASE] = LAYOUT_6
 
 static bool caps_held = false;
 static bool caps_arrow_active[4] = {false, false, false, false};
+static bool s_held = false;
+static bool s_used = false;
 
 bool process_record_user(uint16_t keycode, keyrecord_t *record) {
     switch (keycode) {
@@ -54,6 +59,17 @@ bool process_record_user(uint16_t keycode, keyrecord_t *record) {
                 caps_held = false;
             }
             return true;
+        case KC_S:
+            if (record->event.pressed) {
+                s_held = true;
+                s_used = false;
+            } else {
+                s_held = false;
+                if (!s_used) {
+                    tap_code(KC_S);
+                }
+            }
+            return false;
         case KC_H:
         case KC_J:
         case KC_K:
@@ -70,15 +86,19 @@ bool process_record_user(uint16_t keycode, keyrecord_t *record) {
                 idx = 3;
                 arrow_code = KC_RIGHT;
             }
-            if (record->event.pressed) {
-                if (caps_held) {
+            if (caps_held) {
+                if (record->event.pressed) {
                     register_code(arrow_code);
                     caps_arrow_active[idx] = true;
-                    return false;
+                } else if (caps_arrow_active[idx]) {
+                    unregister_code(arrow_code);
+                    caps_arrow_active[idx] = false;
                 }
-            } else if (caps_arrow_active[idx]) {
-                unregister_code(arrow_code);
-                caps_arrow_active[idx] = false;
+                return false;
+            }
+            if (s_held && record->event.pressed) {
+                tap_code16(C(keycode));
+                s_used = true;
                 return false;
             }
             break;
